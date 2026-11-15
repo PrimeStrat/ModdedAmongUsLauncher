@@ -33,11 +33,11 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ModdedAmongUs
-          path: target/release/ModdedAmongUs.exe
+          name: ModdedMongyLauncher
+          path: target/release/ModdedMongyLauncher.exe
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: target/release/ModdedAmongUs.exe
+          files: target/release/ModdedMongyLauncher.exe
           generate_release_notes: true

@@ -11,7 +11,7 @@ It installs Town of Us Mira (from AU-Avengers/TOU-Mira) exactly as the mod maker
 
 ## How to use
 
-1. Download `ModdedAmongUs.exe` from the Releases page.
+1. Download `ModdedMongyLauncher.exe` from the Releases page.
 2. Open it.
 3. Pick a version and press Play.
 
