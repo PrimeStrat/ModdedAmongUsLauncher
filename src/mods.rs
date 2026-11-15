@@ -51,6 +51,8 @@ pub struct Release {
     #[serde(default)]
     pub prerelease: bool,
     #[serde(default)]
+    pub published_at: String,
+    #[serde(default)]
     pub assets: Vec<Asset>,
 }
 
@@ -62,6 +64,7 @@ pub struct ModSet {
     pub notes_url: String,
     pub prerelease: bool,
     pub fits: bool,
+    pub too_old: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,9 +77,14 @@ pub struct Choice {
 ///
 /// @param platform: Store the game was installed from.
 /// @param arch: Game exe architecture ("x86" or "x64").
+/// @param game_date: Game version date, if known.
 /// @return: Installable mod sets.
-pub fn list_versions(platform: Platform, arch: &str) -> Result<Vec<ModSet>, String> {
-    let sets = pick_tou(&fetch_releases(TOU_REPO)?, platform, arch);
+pub fn list_versions(
+    platform: Platform,
+    arch: &str,
+    game_date: Option<(u32, u32, u32)>,
+) -> Result<Vec<ModSet>, String> {
+    let sets = pick_tou(&fetch_releases(TOU_REPO)?, platform, arch, game_date);
     if sets.is_empty() {
         return Err("No TOU-Mira release has a Windows zip.".into());
     }
@@ -88,8 +96,14 @@ pub fn list_versions(platform: Platform, arch: &str) -> Result<Vec<ModSet>, Stri
 /// @param releases: Releases newest first, as GitHub returns them.
 /// @param platform: Store the game was installed from.
 /// @param arch: Game exe architecture ("x86" or "x64").
+/// @param game_date: Game version date; releases published before it are marked too old.
 /// @return: One mod set per release that has a Windows zip, newest first.
-pub fn pick_tou(releases: &[Release], platform: Platform, arch: &str) -> Vec<ModSet> {
+pub fn pick_tou(
+    releases: &[Release],
+    platform: Platform,
+    arch: &str,
+    game_date: Option<(u32, u32, u32)>,
+) -> Vec<ModSet> {
     let store = platform.name().to_lowercase();
     releases
         .iter()
@@ -113,17 +127,30 @@ pub fn pick_tou(releases: &[Release], platform: Platform, arch: &str) -> Vec<Mod
                 notes_url: r.html_url.clone(),
                 prerelease: r.prerelease,
                 fits: asset.name.to_lowercase().contains(arch),
+                too_old: game_date
+                    .is_some_and(|g| release_date(&r.published_at).map_or(true, |d| d < g)),
             })
         })
         .collect()
 }
 
-/// Resolve "Latest" to the newest full release built for the game's architecture.
+/// Read the date part of a GitHub timestamp like "2026-10-19T00:51:13Z".
+///
+/// @param stamp: Timestamp text.
+/// @return: (year, month, day), or None if it cannot be read.
+pub fn release_date(stamp: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = stamp.get(..10)?.split('-').map(|p| p.parse().ok());
+    Some((parts.next()??, parts.next()??, parts.next()??))
+}
+
+/// Resolve "Latest" to the newest full release built for the game's architecture and version.
 ///
 /// @param versions: Versions from list_versions.
 /// @return: That version, if any.
 pub fn latest(versions: &[ModSet]) -> Option<&ModSet> {
-    versions.iter().find(|v| v.fits && !v.prerelease)
+    versions
+        .iter()
+        .find(|v| v.fits && !v.too_old && !v.prerelease)
 }
 
 /// Read which TOU-Mira version is active in the game folder.

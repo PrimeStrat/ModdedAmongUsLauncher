@@ -186,6 +186,9 @@ impl App {
                 text.push_str("   not built for ");
                 text.push_str(arch);
             }
+            if set.is_some_and(|v| v.too_old) {
+                text.push_str("   older than your game");
+            }
             if saved.iter().any(|s| s == tag) {
                 text.push_str("   downloaded");
             }
@@ -227,6 +230,15 @@ impl App {
                         RichText::new(format!(
                             "This build is not made for {arch} games and may not load."
                         ))
+                        .small()
+                        .color(WARN),
+                    );
+                }
+                if set.too_old {
+                    ui.label(
+                        RichText::new(
+                            "This build came out before your Among Us version and will likely crash.",
+                        )
                         .small()
                         .color(WARN),
                     );
@@ -398,7 +410,11 @@ fn load_versions(game: GameInstall) -> VersionList {
     let slot: VersionList = Arc::new(Mutex::new(None));
     let out = slot.clone();
     thread::spawn(move || {
-        *out.lock().unwrap() = Some(mods::list_versions(game.platform, game.arch()))
+        *out.lock().unwrap() = Some(mods::list_versions(
+            game.platform,
+            game.arch(),
+            game.version(),
+        ))
     });
     slot
 }

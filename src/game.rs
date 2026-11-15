@@ -39,6 +39,13 @@ impl GameInstall {
         pe_arch(&self.dir.join(GAME_EXE))
     }
 
+    /// Read the game version, which Among Us writes as a date, from globalgamemanagers.
+    ///
+    /// @return: (year, month, day), or None if it cannot be read.
+    pub fn version(&self) -> Option<(u32, u32, u32)> {
+        game_version(&fs::read(self.dir.join("Among Us_Data").join("globalgamemanagers")).ok()?)
+    }
+
     /// Start the game through its store so ownership and login are handled by the store.
     ///
     /// @return: Ok if the launch command was started.
@@ -81,6 +88,30 @@ pub fn pe_arch(exe: &Path) -> &'static str {
         Some(0x014C) => "x86",
         _ => "???",
     }
+}
+
+/// Find the first length-prefixed "year.month.day" string in Unity asset data.
+///
+/// @param data: globalgamemanagers bytes.
+/// @return: (year, month, day), or None if no such string exists.
+pub fn game_version(data: &[u8]) -> Option<(u32, u32, u32)> {
+    data.windows(4).enumerate().find_map(|(at, len)| {
+        let len = u32::from_le_bytes([len[0], len[1], len[2], len[3]]) as usize;
+        if !(8..=10).contains(&len) {
+            return None;
+        }
+        let text = std::str::from_utf8(data.get(at + 4..at + 4 + len)?).ok()?;
+        let parts: Vec<u32> = text
+            .split('.')
+            .map(|p| p.parse().ok())
+            .collect::<Option<_>>()?;
+        match parts[..] {
+            [y, m, d] if y >= 2018 && (1..=12).contains(&m) && (1..=31).contains(&d) => {
+                Some((y, m, d))
+            }
+            _ => None,
+        }
+    })
 }
 
 /// Pull every quoted value for a key out of a Steam VDF/ACF text file.
