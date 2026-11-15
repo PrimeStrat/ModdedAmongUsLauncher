@@ -48,7 +48,11 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([500.0, 470.0])
-            .with_resizable(false),
+            .with_resizable(false)
+            .with_icon(
+                eframe::icon_data::from_png_bytes(include_bytes!("../Assets/Icon.png"))
+                    .expect("Assets/Icon.png is a valid PNG"),
+            ),
         ..Default::default()
     };
     eframe::run_native(
