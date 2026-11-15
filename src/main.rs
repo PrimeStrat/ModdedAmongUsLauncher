@@ -4,11 +4,17 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use eframe::egui;
-use modded_among_us::game::{detect_installs, GameInstall};
+use eframe::egui::{self, Color32, FontId, RichText, TextStyle};
+use modded_among_us::game::{detect_installs, GameInstall, Platform};
 use modded_among_us::mods::{self, Choice, ModSet, LATEST};
 
 const CLOSE_AFTER: Duration = Duration::from_secs(3);
+const BG: Color32 = Color32::from_rgb(21, 22, 28);
+const CARD: Color32 = Color32::from_rgb(31, 33, 41);
+const ACCENT: Color32 = Color32::from_rgb(200, 40, 60);
+const MUTED: Color32 = Color32::from_rgb(150, 154, 168);
+const GOOD: Color32 = Color32::from_rgb(90, 200, 120);
+const WARN: Color32 = Color32::from_rgb(235, 180, 70);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -41,14 +47,17 @@ struct App {
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([460.0, 300.0])
+            .with_inner_size([500.0, 470.0])
             .with_resizable(false),
         ..Default::default()
     };
     eframe::run_native(
         "Modded Among Us",
         options,
-        Box::new(|_| Ok(Box::new(App::new()))),
+        Box::new(|cc| {
+            apply_theme(&cc.egui_ctx);
+            Ok(Box::new(App::new()))
+        }),
     )
 }
 
@@ -64,8 +73,7 @@ impl App {
             .collect();
         let line = match installs.len() {
             0 => "Among Us was not found in Steam or Epic Games. Install it from your store first.",
-            1 => "Pick a version and press Play.",
-            _ => "Among Us was found in more than one store. Pick one and press Play.",
+            _ => "Pick a version and press Play.",
         };
         App {
             choice: installs
@@ -111,65 +119,144 @@ impl App {
         });
     }
 
-    /// Draw the store picker, mod toggle and version picker.
+    /// Draw the store chips and the selected install path.
     ///
     /// @param ui: egui UI.
-    /// @param busy: True while a switch is running.
     /// @return: None
-    fn draw_controls(&mut self, ui: &mut egui::Ui, busy: bool) {
-        ui.add_enabled_ui(!busy, |ui| {
+    fn draw_game(&mut self, ui: &mut egui::Ui) {
+        section_label(ui, "GAME");
+        ui.horizontal(|ui| {
             for i in 0..self.installs.len() {
-                let game = &self.installs[i];
-                let text = format!("{}  ({})", game.platform.name(), game.dir.display());
-                if ui.radio(self.selected == i, text).clicked() && self.selected != i {
+                let name = store_name(self.installs[i].platform);
+                let text = RichText::new(name).size(15.0).strong();
+                if ui.selectable_label(self.selected == i, text).clicked() && self.selected != i {
                     self.selected = i;
                     self.choice = mods::load_choice(&self.installs[i].dir);
                 }
             }
-            if self.installs.is_empty() {
-                return;
-            }
-            ui.add_space(6.0);
-            ui.checkbox(&mut self.choice.enabled, "Load mods");
-            let dir = self.installs[self.selected].dir.clone();
-            let saved: Vec<String> = mods::archived_versions(&dir)
-                .into_iter()
-                .chain(mods::installed_version(&dir))
-                .collect();
-            let mut tags: Vec<String> = match &*self.versions[self.selected].lock().unwrap() {
-                Some(Ok(list)) => list.iter().map(|v| v.tou_tag.clone()).collect(),
-                _ => Vec::new(),
-            };
-            tags.extend(
-                saved
-                    .iter()
-                    .filter(|t| !tags.contains(t))
-                    .cloned()
-                    .collect::<Vec<_>>(),
-            );
-            let label = |tag: &str| {
-                let shown = if tag == LATEST {
-                    format!("{LATEST} ({})", tags.first().map_or("???", String::as_str))
-                } else {
-                    tag.to_string()
-                };
-                if saved.iter().any(|s| s == tag) {
-                    format!("{shown}  (downloaded)")
-                } else {
-                    shown
-                }
-            };
-            ui.add_enabled_ui(self.choice.enabled, |ui| {
-                egui::ComboBox::from_label("Version")
-                    .selected_text(label(&self.choice.version))
-                    .show_ui(ui, |ui| {
-                        for tag in std::iter::once(LATEST.to_string()).chain(tags.iter().cloned()) {
-                            let text = label(&tag);
-                            ui.selectable_value(&mut self.choice.version, tag, text);
-                        }
-                    });
-            });
         });
+        let game = &self.installs[self.selected];
+        ui.label(
+            RichText::new(format!("{}  ({})", game.dir.display(), game.arch()))
+                .small()
+                .color(MUTED),
+        );
+    }
+
+    /// Draw the mod toggle, version picker and notes for the picked version.
+    ///
+    /// @param ui: egui UI.
+    /// @return: None
+    fn draw_mods(&mut self, ui: &mut egui::Ui) {
+        section_label(ui, "MODS");
+        ui.checkbox(
+            &mut self.choice.enabled,
+            RichText::new("Load Town of Us Mira").size(15.0),
+        );
+        let dir = self.installs[self.selected].dir.clone();
+        let arch = self.installs[self.selected].arch();
+        let saved: Vec<String> = mods::archived_versions(&dir)
+            .into_iter()
+            .chain(mods::installed_version(&dir))
+            .collect();
+        let loaded = self.versions[self.selected].lock().unwrap().clone();
+        let list: Vec<ModSet> = match &loaded {
+            Some(Ok(list)) => list.clone(),
+            _ => Vec::new(),
+        };
+        let mut tags: Vec<String> = list.iter().map(|v| v.tou_tag.clone()).collect();
+        tags.extend(
+            saved
+                .iter()
+                .filter(|t| !tags.contains(t))
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+        let latest = mods::latest(&list).map(|v| v.tou_tag.clone());
+        let label = |tag: &str| -> String {
+            let mut text = match tag {
+                LATEST => format!("{LATEST} ({})", latest.as_deref().unwrap_or("???")),
+                _ => tag.to_string(),
+            };
+            let set = list.iter().find(|v| v.tou_tag == tag);
+            if set.is_some_and(|v| v.prerelease) {
+                text.push_str("   pre-release");
+            }
+            if set.is_some_and(|v| !v.fits) {
+                text.push_str("   not built for ");
+                text.push_str(arch);
+            }
+            if saved.iter().any(|s| s == tag) {
+                text.push_str("   downloaded");
+            }
+            text
+        };
+        ui.add_space(4.0);
+        ui.add_enabled_ui(self.choice.enabled, |ui| {
+            egui::ComboBox::from_id_salt("version")
+                .width(ui.available_width())
+                .height(320.0)
+                .selected_text(RichText::new(label(&self.choice.version)).size(15.0))
+                .show_ui(ui, |ui| {
+                    for tag in std::iter::once(LATEST.to_string()).chain(tags.iter().cloned()) {
+                        let text = label(&tag);
+                        ui.selectable_value(&mut self.choice.version, tag, text);
+                    }
+                });
+        });
+        let wanted = if self.choice.version == LATEST {
+            latest.clone()
+        } else {
+            Some(self.choice.version.clone())
+        };
+        let picked = wanted.and_then(|tag| list.iter().find(|v| v.tou_tag == tag).cloned());
+        ui.horizontal_wrapped(|ui| match (&loaded, &picked) {
+            (None, _) => {
+                ui.spinner();
+                ui.label(RichText::new("Loading versions...").color(MUTED));
+            }
+            (Some(Err(e)), _) => {
+                ui.label(RichText::new(format!("Offline: {e}")).small().color(WARN));
+            }
+            (_, Some(set)) => {
+                if !set.notes_url.is_empty() {
+                    ui.hyperlink_to("Release notes", &set.notes_url);
+                }
+                if !set.fits {
+                    ui.label(
+                        RichText::new(format!(
+                            "This build is not made for {arch} games and may not load."
+                        ))
+                        .small()
+                        .color(WARN),
+                    );
+                }
+            }
+            _ => {}
+        });
+    }
+
+    /// Draw the progress bar and status text.
+    ///
+    /// @param ui: egui UI.
+    /// @param phase: Current phase.
+    /// @param line: Status text.
+    /// @param fraction: Progress 0..1.
+    /// @return: None
+    fn draw_status(&self, ui: &mut egui::Ui, phase: Phase, line: &str, fraction: f32) {
+        if phase == Phase::Working {
+            ui.add(
+                egui::ProgressBar::new(fraction)
+                    .fill(ACCENT)
+                    .show_percentage(),
+            );
+        }
+        let color = match phase {
+            Phase::Failed => ACCENT,
+            Phase::Launched => GOOD,
+            _ => MUTED,
+        };
+        ui.label(RichText::new(line).color(color));
     }
 }
 
@@ -189,21 +276,39 @@ impl eframe::App for App {
             .get(self.selected)
             .is_some_and(|v| v.lock().unwrap().is_some());
         let mut play = false;
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Modded Among Us");
-            ui.label("Town of Us Mira");
-            ui.add_space(8.0);
-            self.draw_controls(ui, phase == Phase::Working);
-            ui.add_space(8.0);
-            if !list_ready && !self.installs.is_empty() {
-                ui.label("Loading versions...");
+        let panel = egui::Frame::none().fill(BG).inner_margin(20.0);
+        egui::CentralPanel::default().frame(panel).show(ctx, |ui| {
+            ui.label(
+                RichText::new("Modded Among Us")
+                    .size(28.0)
+                    .strong()
+                    .color(Color32::WHITE),
+            );
+            ui.label(RichText::new("Town of Us Mira launcher").color(MUTED));
+            ui.add_space(12.0);
+            if !self.installs.is_empty() {
+                ui.add_enabled_ui(phase != Phase::Working, |ui| {
+                    card(ui, |ui| self.draw_game(ui));
+                    ui.add_space(10.0);
+                    card(ui, |ui| self.draw_mods(ui));
+                });
+                ui.add_space(10.0);
             }
-            if phase == Phase::Working {
-                ui.add(egui::ProgressBar::new(fraction).show_percentage());
-            }
-            ui.label(&line);
-            let can_play = list_ready && matches!(phase, Phase::Waiting | Phase::Failed);
-            play = can_play && ui.button("Play").clicked();
+            self.draw_status(ui, phase, &line, fraction);
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                let can_play = list_ready && matches!(phase, Phase::Waiting | Phase::Failed);
+                let text = RichText::new("PLAY")
+                    .size(20.0)
+                    .strong()
+                    .color(Color32::WHITE);
+                let button = egui::Button::new(text).fill(ACCENT).rounding(8.0);
+                play = ui
+                    .add_enabled(
+                        can_play,
+                        button.min_size(egui::vec2(ui.available_width(), 48.0)),
+                    )
+                    .clicked();
+            });
         });
         if play {
             self.start();
@@ -213,7 +318,75 @@ impl eframe::App for App {
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
-        ctx.request_repaint_after(Duration::from_millis(100));
+        if matches!(phase, Phase::Working | Phase::Launched) || !list_ready {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+    }
+}
+
+/// Set the dark theme, accent color, spacing and font sizes.
+///
+/// @param ctx: egui context.
+/// @return: None
+fn apply_theme(ctx: &egui::Context) {
+    let mut visuals = egui::Visuals::dark();
+    visuals.panel_fill = BG;
+    visuals.window_fill = CARD;
+    visuals.extreme_bg_color = BG;
+    visuals.selection.bg_fill = ACCENT;
+    visuals.hyperlink_color = Color32::from_rgb(120, 170, 255);
+    visuals.widgets.inactive.rounding = 6.0.into();
+    visuals.widgets.hovered.rounding = 6.0.into();
+    visuals.widgets.active.rounding = 6.0.into();
+    ctx.set_visuals(visuals);
+    ctx.style_mut(|style| {
+        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        style.spacing.button_padding = egui::vec2(12.0, 6.0);
+        style
+            .text_styles
+            .insert(TextStyle::Body, FontId::proportional(14.0));
+        style
+            .text_styles
+            .insert(TextStyle::Button, FontId::proportional(14.0));
+        style
+            .text_styles
+            .insert(TextStyle::Small, FontId::proportional(12.0));
+    });
+}
+
+/// Draw content inside a rounded card.
+///
+/// @param ui: egui UI.
+/// @param add: Draws the card content.
+/// @return: None
+fn card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::none()
+        .fill(CARD)
+        .rounding(10.0)
+        .inner_margin(14.0)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui);
+        });
+}
+
+/// Draw a small muted section heading.
+///
+/// @param ui: egui UI.
+/// @param text: Heading text.
+/// @return: None
+fn section_label(ui: &mut egui::Ui, text: &str) {
+    ui.label(RichText::new(text).small().strong().color(MUTED));
+}
+
+/// Full store name for the UI.
+///
+/// @param platform: Store.
+/// @return: Display name.
+fn store_name(platform: Platform) -> &'static str {
+    match platform {
+        Platform::Steam => "Steam",
+        Platform::Epic => "Epic Games",
     }
 }
 
@@ -250,8 +423,7 @@ fn prepare_and_launch(
     let wanted = match (choice.enabled, choice.version.as_str()) {
         (false, _) => None,
         (true, LATEST) => Some(
-            versions
-                .first()
+            mods::latest(&versions)
                 .map(|v| v.tou_tag.clone())
                 .or_else(|| mods::installed_version(&game.dir))
                 .ok_or("Could not find the latest version. Check your internet.")?,

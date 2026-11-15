@@ -10,14 +10,27 @@ const TOU_REPO: &str = "AU-Avengers/TOU-Mira";
 const MARKER_FILE: &str = "BepInEx/ModdedAmongUs.txt";
 const ARCHIVE_DIR: &str = "ModdedAmongUs";
 const CHOICE_FILE: &str = "ModdedAmongUs/choice.txt";
-const MOD_ENTRIES: [&str; 5] = [
+const MOD_ENTRIES: [&str; 7] = [
     "winhttp.dll",
     "doorstop_config.ini",
     ".doorstop_version",
     "BepInEx",
     "dotnet",
+    "CorsacCosmetics",
+    "steam_appid.txt",
 ];
-const SPLASH_PATCHER: &str = "BepInEx/patchers/BepInEx.SplashScreen";
+const UNWANTED: [&str; 3] = [
+    "BepInEx/patchers/BepInEx.SplashScreen",
+    "BepInEx/plugins/LevelImposter.dll",
+    "BepInEx/plugins/LevelImposter",
+];
+const SHARED_CACHE: [&str; 2] = ["BepInEx/interop", "BepInEx/unity-libs"];
+const CACHE_HASH: &str = "BepInEx/interop/assembly-hash.txt";
+const REQUIRED: [&str; 3] = [
+    "winhttp.dll",
+    "BepInEx/plugins/MiraAPI.dll",
+    "BepInEx/plugins/TownOfUsMira.dll",
+];
 const USER_AGENT: &str = "ModdedAmongUsInstaller/2.0";
 
 pub const LATEST: &str = "Latest";
@@ -32,6 +45,8 @@ pub struct Asset {
 pub struct Release {
     pub tag_name: String,
     #[serde(default)]
+    pub html_url: String,
+    #[serde(default)]
     pub draft: bool,
     #[serde(default)]
     pub prerelease: bool,
@@ -44,6 +59,9 @@ pub struct ModSet {
     pub tou_tag: String,
     pub tou_asset: String,
     pub tou_url: String,
+    pub notes_url: String,
+    pub prerelease: bool,
+    pub fits: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,48 +70,60 @@ pub struct Choice {
     pub version: String,
 }
 
-/// List every TOU-Mira version built for this game, newest first.
+/// List every TOU-Mira release that has a Windows zip, newest first.
 ///
 /// @param platform: Store the game was installed from.
 /// @param arch: Game exe architecture ("x86" or "x64").
 /// @return: Installable mod sets.
 pub fn list_versions(platform: Platform, arch: &str) -> Result<Vec<ModSet>, String> {
-    let tou = pick_tou(&fetch_releases(TOU_REPO)?, platform, arch);
-    if tou.is_empty() {
-        return Err(format!(
-            "No TOU-Mira release has a {} {arch} zip.",
-            platform.name()
-        ));
+    let sets = pick_tou(&fetch_releases(TOU_REPO)?, platform, arch);
+    if sets.is_empty() {
+        return Err("No TOU-Mira release has a Windows zip.".into());
     }
-    Ok(tou
-        .into_iter()
-        .map(|(tag, asset)| ModSet {
-            tou_tag: tag,
-            tou_asset: asset.name,
-            tou_url: asset.browser_download_url,
-        })
-        .collect())
+    Ok(sets)
 }
 
-/// Pick every published TOU-Mira zip built for this store and architecture.
+/// Pick the best Windows zip of every release: same architecture first, then same store.
 ///
 /// @param releases: Releases newest first, as GitHub returns them.
 /// @param platform: Store the game was installed from.
 /// @param arch: Game exe architecture ("x86" or "x64").
-/// @return: Release tag and matching asset for each release that has one, newest first.
-pub fn pick_tou(releases: &[Release], platform: Platform, arch: &str) -> Vec<(String, Asset)> {
+/// @return: One mod set per release that has a Windows zip, newest first.
+pub fn pick_tou(releases: &[Release], platform: Platform, arch: &str) -> Vec<ModSet> {
     let store = platform.name().to_lowercase();
     releases
         .iter()
-        .filter(|r| !r.draft && !r.prerelease)
+        .filter(|r| !r.draft)
         .filter_map(|r| {
-            let asset = r.assets.iter().find(|a| {
-                let name = a.name.to_lowercase();
-                name.ends_with(".zip") && name.contains(&store) && name.contains(arch)
-            })?;
-            Some((r.tag_name.clone(), asset.clone()))
+            let asset = r
+                .assets
+                .iter()
+                .filter(|a| {
+                    let name = a.name.to_lowercase();
+                    name.ends_with(".zip") && !name.contains("macos") && !name.contains("linux")
+                })
+                .max_by_key(|a| {
+                    let name = a.name.to_lowercase();
+                    (name.contains(arch), name.contains(&store))
+                })?;
+            Some(ModSet {
+                tou_tag: r.tag_name.clone(),
+                tou_asset: asset.name.clone(),
+                tou_url: asset.browser_download_url.clone(),
+                notes_url: r.html_url.clone(),
+                prerelease: r.prerelease,
+                fits: asset.name.to_lowercase().contains(arch),
+            })
         })
         .collect()
+}
+
+/// Resolve "Latest" to the newest full release built for the game's architecture.
+///
+/// @param versions: Versions from list_versions.
+/// @return: That version, if any.
+pub fn latest(versions: &[ModSet]) -> Option<&ModSet> {
+    versions.iter().find(|v| v.fits && !v.prerelease)
 }
 
 /// Read which TOU-Mira version is active in the game folder.
@@ -179,18 +209,35 @@ pub fn switch_to(
         })?;
         install(game_dir, set, progress)?;
     }
-    remove_splash(game_dir)
+    remove_unwanted(game_dir)?;
+    let missing: Vec<&str> = REQUIRED
+        .into_iter()
+        .filter(|f| !game_dir.join(f).exists())
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "Version {tag} is missing {}. Pick it again to download it fresh.",
+        missing.join(", ")
+    ))
 }
 
-/// Delete the BepInEx loading splash, whose .NET Framework GUI makes Windows ask to install .NET Framework.
+/// Delete LevelImposter and the BepInEx loading splash, whose .NET Framework GUI makes Windows ask to install .NET Framework.
 ///
 /// @param game_dir: Among Us folder.
-/// @return: Ok once the splash patcher is gone.
-pub fn remove_splash(game_dir: &Path) -> Result<(), String> {
-    let splash = game_dir.join(SPLASH_PATCHER);
-    if splash.exists() {
-        fs::remove_dir_all(&splash)
-            .map_err(|e| format!("Could not remove the splash screen: {e}"))?;
+/// @return: Ok once those files are gone.
+pub fn remove_unwanted(game_dir: &Path) -> Result<(), String> {
+    for name in UNWANTED {
+        let path = game_dir.join(name);
+        let result = if path.is_dir() {
+            fs::remove_dir_all(&path)
+        } else if path.exists() {
+            fs::remove_file(&path)
+        } else {
+            Ok(())
+        };
+        result.map_err(|e| format!("Could not remove {name}: {e}"))?;
     }
     Ok(())
 }
@@ -209,6 +256,7 @@ pub fn install(
     let tou_zip = download(&set.tou_url, &format!("TOU-Mira {}", set.tou_tag), progress)?;
     progress("Installing files...".into(), 1.0);
     let entries = extract_zip(&tou_zip, game_dir)?;
+    reuse_cache(game_dir)?;
     let marker = std::iter::once(set.tou_tag.clone())
         .chain(entries)
         .collect::<Vec<_>>()
@@ -217,6 +265,28 @@ pub fn install(
 ",
         );
     fs::write(game_dir.join(MARKER_FILE), marker).map_err(|e| e.to_string())
+}
+
+/// Copy the generated BepInEx interop cache from a saved version so the first start skips the slow rebuild.
+///
+/// @param game_dir: Among Us folder with a freshly extracted version active.
+/// @return: Ok once copied, or when there is nothing to copy.
+pub fn reuse_cache(game_dir: &Path) -> Result<(), String> {
+    if game_dir.join(CACHE_HASH).exists() {
+        return Ok(());
+    }
+    let Some(donor) = archived_versions(game_dir)
+        .into_iter()
+        .map(|tag| game_dir.join(ARCHIVE_DIR).join(tag))
+        .find(|dir| dir.join(CACHE_HASH).exists())
+    else {
+        return Ok(());
+    };
+    for name in SHARED_CACHE {
+        copy_dir(&donor.join(name), &game_dir.join(name))
+            .map_err(|e| format!("Could not copy {name}: {e}"))?;
+    }
+    Ok(())
 }
 
 /// Move the active mod files into the archive under their version.
@@ -254,6 +324,11 @@ pub fn archive_active(game_dir: &Path) -> Result<(), String> {
 pub fn restore(game_dir: &Path, tag: &str) -> Result<bool, String> {
     let src = game_dir.join(ARCHIVE_DIR).join(tag);
     if !src.is_dir() {
+        return Ok(false);
+    }
+    let marker = fs::read_to_string(src.join(MARKER_FILE)).unwrap_or_default();
+    if marker.lines().count() < 2 {
+        fs::remove_dir_all(&src).map_err(|e| format!("Could not clear old archive {tag}: {e}"))?;
         return Ok(false);
     }
     let entries: Vec<String> = fs::read_dir(&src)
@@ -324,6 +399,24 @@ pub fn wrapping_folder(names: &[PathBuf]) -> Option<PathBuf> {
         .iter()
         .all(|n| n.starts_with(&first) && (n.components().count() > 1 || n == &first));
     (wraps_all && names.iter().any(|n| n.components().count() > 1)).then_some(first)
+}
+
+/// Copy a folder and everything in it.
+///
+/// @param from: Source folder.
+/// @param to: Destination folder, created if missing.
+/// @return: Ok once every file is copied.
+fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)?.flatten() {
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
 }
 
 /// Move named files and folders from one folder to another on the same drive.
