@@ -16,25 +16,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Build exe
-        run: python build_exe.py
+        run: cargo build --release
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ModdedAmongUsInstaller
-          path: dist/ModdedAmongUsInstaller.exe
+          name: ModdedAmongUs
+          path: target/release/ModdedAmongUs.exe
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/ModdedAmongUsInstaller.exe
+          files: target/release/ModdedAmongUs.exe
           generate_release_notes: true

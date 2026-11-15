@@ -1,0 +1,12 @@
+{
+    "name": "modded-among-us",
+    "version": "2.0.0",
+    "private": true,
+    "license": "GPL-3.0",
+    "scripts": {
+        "start": "cargo run --release",
+        "build": "cargo build --release",
+        "test": "cargo test --release -- --nocapture --test-threads=1",
+        "format": "cargo fmt"
+    }
+}
