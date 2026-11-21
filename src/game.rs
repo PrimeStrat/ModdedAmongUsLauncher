@@ -50,8 +50,8 @@ impl GameInstall {
     ///
     /// @return: Ok if the launch command was started.
     pub fn launch(&self) -> Result<(), String> {
-        Command::new("explorer.exe")
-            .arg(&self.launch_uri)
+        Command::new("rundll32.exe")
+            .args(["url.dll,FileProtocolHandler", &self.launch_uri])
             .spawn()
             .map(|_| ())
             .map_err(|e| format!("Could not launch {}: {e}", self.platform.name()))
