@@ -31,7 +31,7 @@ const REQUIRED: [&str; 3] = [
     "BepInEx/plugins/MiraAPI.dll",
     "BepInEx/plugins/TownOfUsMira.dll",
 ];
-const USER_AGENT: &str = "ModdedAmongUsInstaller/2.0";
+const USER_AGENT: &str = "ModdedAmongUsLauncher/2.0";
 
 pub const LATEST: &str = "Latest";
 
