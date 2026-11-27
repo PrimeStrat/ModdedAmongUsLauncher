@@ -38,6 +38,7 @@ struct App {
     selected: usize,
     choice: Choice,
     launched_at: Option<Instant>,
+    save_log: bool,
     status: Arc<Mutex<Status>>,
 }
 
@@ -91,6 +92,7 @@ impl App {
             versions,
             selected: 0,
             launched_at: None,
+            save_log: false,
             status: Arc::new(Mutex::new(Status {
                 phase: Phase::Waiting,
                 line: line.into(),
@@ -107,19 +109,35 @@ impl App {
         let list = self.versions[self.selected].lock().unwrap().clone();
         let choice = self.choice.clone();
         let status = self.status.clone();
+        let save_log = self.save_log;
         set_status(&status, Phase::Working, "Preparing...".into(), 0.0);
         thread::spawn(move || {
             let progress =
                 |line: String, fraction: f32| set_status(&status, Phase::Working, line, fraction);
-            match prepare_and_launch(&game, &choice, list, &progress) {
-                Ok(()) => set_status(
-                    &status,
-                    Phase::Launched,
-                    "Launching Among Us...".into(),
-                    1.0,
-                ),
-                Err(e) => set_status(&status, Phase::Failed, e, 0.0),
+            let result = prepare_and_launch(&game, &choice, list, &progress);
+            let log_error = if save_log {
+                std::env::current_exe()
+                    .map_err(|e| e.to_string())
+                    .and_then(|exe| {
+                        mods::write_log(
+                            &exe.with_file_name("ModdedMongyLauncher.txt"),
+                            &game,
+                            &choice,
+                            &result,
+                        )
+                    })
+                    .err()
+            } else {
+                None
+            };
+            let (phase, mut line, fraction) = match result {
+                Ok(()) => (Phase::Launched, "Launching Among Us...".to_string(), 1.0),
+                Err(e) => (Phase::Failed, e, 0.0),
+            };
+            if let Some(e) = log_error {
+                line.push_str(&format!(" (Log not saved: {e})"));
             }
+            set_status(&status, phase, line, fraction);
         });
     }
 
@@ -250,6 +268,11 @@ impl App {
             }
             _ => {}
         });
+        ui.add_space(4.0);
+        ui.checkbox(
+            &mut self.save_log,
+            RichText::new("Save results to ModdedMongyLauncher.txt").color(MUTED),
+        );
     }
 
     /// Draw the progress bar and status text.

@@ -1,10 +1,11 @@
 use std::fs;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
-use crate::game::Platform;
+use crate::game::{GameInstall, Platform};
 
 const TOU_REPO: &str = "AU-Avengers/TOU-Mira";
 const MARKER_FILE: &str = "BepInEx/ModdedAmongUs.txt";
@@ -516,4 +517,67 @@ fn download(url: &str, label: &str, progress: &dyn Fn(String, f32)) -> Result<Ve
             fraction,
         );
     }
+}
+
+/// Append one line about a Play attempt to a results file.
+///
+/// @param path: Results file, created if missing.
+/// @param game: Install that was used.
+/// @param choice: Mods on or off and the wanted version.
+/// @param result: Outcome of preparing and launching.
+/// @return: Ok once the line is written.
+pub fn write_log(
+    path: &Path,
+    game: &GameInstall,
+    choice: &Choice,
+    result: &Result<(), String>,
+) -> Result<(), String> {
+    let count = |name: &str| count_files(&game.dir.join(name));
+    let version = game
+        .version()
+        .map_or("???".to_string(), |(y, m, d)| format!("{y}.{m}.{d}"));
+    let outcome = match result {
+        Ok(()) => "OK".to_string(),
+        Err(e) => format!("FAIL: {e}"),
+    };
+    let line = format!(
+        "time {} | {} | {} | {} | game {version} | mods {} {} | active {} | BepInEx {} files, dotnet {} files, CorsacCosmetics {} files, winhttp.dll {} | {outcome}
+",
+        SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()),
+        game.platform.name(),
+        game.dir.display(),
+        game.arch(),
+        if choice.enabled { "on" } else { "off" },
+        choice.version,
+        installed_version(&game.dir).as_deref().unwrap_or("none"),
+        count("BepInEx"),
+        count("dotnet"),
+        count("CorsacCosmetics"),
+        if game.dir.join("winhttp.dll").exists() { "yes" } else { "no" },
+    );
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| file.write_all(line.as_bytes()))
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Count every file inside a folder and its subfolders.
+///
+/// @param dir: Folder to count.
+/// @return: Number of files, 0 if the folder is missing.
+fn count_files(dir: &Path) -> usize {
+    fs::read_dir(dir).map_or(0, |entries| {
+        entries
+            .flatten()
+            .map(|e| {
+                if e.path().is_dir() {
+                    count_files(&e.path())
+                } else {
+                    1
+                }
+            })
+            .sum()
+    })
 }
